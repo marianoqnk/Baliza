@@ -27,39 +27,46 @@ Diseñado * Implementación de la luz reactivo con LDR como de windi
    Declaraciones
    ================================================================= */
  
-typedef uint8_t UBYTE;
-typedef int8_t SBYTE;
-typedef uint16_t WORD;
-typedef int16_t SWORD;
- 
-typedef int8_t BOOL;
- 
-//#define TRUE (0==0)
-//#define FALSE (0!=0)
-#define LED1 PORTB0
-#define LED2 PORTB1
-#define ADC_VERSORGUNG PORTB3 // ENCENDER Y APAGAR LA ALIMENTACION DEL LED
- 
-#define ON 1
-#define OFF 0
+#define umbralNoche       (unsigned int)500    //umbrales LDR noche
+#define umbralDia         (unsigned int)530	//umbral LDR dia
+#define contadorDia (unsigned int)64   //numero de veces que tiene que haber mucha luz para pasar a modo día
+#define umbralParpadeo   (int)1   //umbral parpadeo
+#define temporizadorNoche      WDTO_120MS //temporizador nocturno
+#define temporizadorDia        WDTO_8S  //temporizador diurno
+
+#define LED1 PORTB0 //PIN 5
+#define LED2 PORTB1 //PIN 6
+#define POWER_LDR PORTB3 // ENCENDER Y APAGAR LA ALIMENTACION DEL LED PIN 2
+//PB4 PIN3 ENTRADA ADC2
+//PB2 PIN7 LIBRE
 #define TOGGLE 2
  
 void doBlink(void);
-void controlDO(SBYTE , SBYTE );
+//void digitalWrite(char , char );
  
 /* =================================================================
    Las variables globales del Estado
    ================================================================= */
- 
-WORD wLetzteHelligkeit;   // Cache el último valor de brillo
-BOOL fNachtMode;        //== TRUE si el modo nocturno está activo
-BOOL fBlinkMode;      // == TRUE si el LED parpadea
-BOOL fPrepareTag;     // == TRUE si en el modo de día, la oferta de la LDR 
+
+unsigned int ultimoValorBrillo;   // Cache el último valor de brillo
+boolean modoNoche;        //== TRUE si el modo nocturno está activo
+boolean modoParpadeo;      // == TRUE si el LED parpadea
+boolean ldrAlimentada;     // == TRUE si en el modo de día, la oferta de la LDR 
                   // ¿Está activado y se puede hacer la consulta
-WORD wTagCounter;      // Cuente cuántas veces "días" mide
+unsigned int contadorMedidasDia;      // Cuente cuántas veces "días" mide
  
-WORD wBlinkCounter;      // Contador para el generador de flash
-BOOL fBDimmerMode;
+unsigned int wBlinkCounter;      // Contador para el generador de flash
+boolean fBDimmerMode;
+/* ================================================ =================
+   Rutina de servicio de interrupción para la finalización de la conversión AD
+      que realmente no hace nada
+   ================================================== =============== */
+void AdcInterrupt(void)
+{
+}
+void WdtInterrupt(void);
+
+ 
 /* =================================================================
     Inicialización del chip
    
@@ -74,18 +81,24 @@ void initChip(void)
    // Habilitar ADC2 (pin 3) // XXXXXX10
    // // Vcc como tensión de referencia x0xxxxxx
    //Alineado a la derecha  Resultados xx0xxxxx
+   
    ADMUX = 0x02;                     // 00000010
  
     // IO Digital
    // ------------------------------------------------ ------
    // En primer lugar en la entrada 
-   // Excepto por LED1, LED2, el ADC_VERSORGUNG // xx001011
-   DDRB = 0x0b;                                 // 00001011
+   // Excepto por LED1, LED2, el POWER_LDR // xx001011
+   pinMode(LED1,OUTPUT);
+   pinMode(LED2,OUTPUT);
+   pinMode(POWER_LDR,OUTPUT);
+   //DDRB = 0x0b;                                 // 00001011
      // Resistencias pull-up para todo, excepto para el
    // salidas digitales y la ADC2 entrada analógica 
    // Habilitar (PB4) // xx100100
    // Save => actual objetivo
-   PORTB = 0x24;    //valor de salida                              // 00100100
+   digitalWrite(2,HIGH);//pone los pines no utilizdos a 1 para reducir el consumo
+   digitalWrite(5,HIGH);
+   //PORTB = 0x24;    //valor de salida                              // 00100100
    // Las entradas digitales no utilizadas deaktivien
    // => Ahorra energía
    // No se necesitan entradas digitales // xx111111
@@ -93,14 +106,15 @@ void initChip(void)
    TCCR0A |=  _BV(WGM01) | _BV(WGM00);//modo fast pwm
    TCCR0B |=  _BV(CS01) |_BV(CS00);//modo normal clock /8 por systen clock preescaler y luego preescaler de timer
 						//9,6Mhz/8 = 1,2Mhz preescales+r 1024 = 1,1Khz
+   attachInterrupt(9,AdcInterrupt,RISING);
+   attachInterrupt(8,WdtInterrupt,RISING);
 }
-void analogWrite(UBYTE pin, UBYTE value)
+/*void analogWrite(unsidned char pin, unsidned char value)
 {
-  //pinMode(3, OUTPUT);ya están
-  //pinMode(11, OUTPUT);
+ 
   if(pin==LED1)
   {
-	  if(value==0) controlDO(PORTB0, OFF);
+	  if(value==0) digitalWrite(PORTB0, OFF);
 	  else  {
 	  TCCR0A |= _BV(COM0A1); //activa que el pin vaya a OCR0A ponerlo a 0 para operacion normal
 	  OCR0A = value;
@@ -108,14 +122,14 @@ void analogWrite(UBYTE pin, UBYTE value)
   }
   else if(pin==LED2)
   {
-	if(value==0) controlDO(PORTB1, OFF);
+	if(value==0) digitalWrite(PORTB1, OFF);
 	  else{
 	  TCCR0A |=  _BV(COM0B1);//activa que el pin vaya a OCR0B ponerlo a 0 para operacion normal
 	  OCR0B = value;
 	  }
   }
   
-}
+}*/
  
 /* ================================================ =================
    La lectura de la entrada analógica
@@ -125,14 +139,14 @@ void analogWrite(UBYTE pin, UBYTE value)
    En: nix
    Salida: (PALABRA) señal analógica actual
    ================================================== =============== */
-WORD readADC(void)
+unsigned int readADC(void)
 {
-   WORD wValue;
+   unsigned int wValue;
    
    // Preparar el tendido sueño del procesador
    // -> Procesador en el modo de envío de reducción de ruido ADC: 
    // Modo de sueño más profundo, lo que permite un despertar por ADC
-   set_sleep_mode(SLEEP_MODE_ADC);
+   set_sleep_mode(SLEEP_MODE_ADC); 
    sleep_enable();
    sei();
  
@@ -158,7 +172,7 @@ WORD readADC(void)
  
    // Leer el valor (los dos bits más bajos de ADCH 
    // (8 bit desplazado a la izquierda) + ADCL
-   wValue = ((WORD)ADCL + (((WORD)(ADCH))<<8)) & 0x03ff;
+   wValue = ((unsigned int)ADCL + (((unsigned int)(ADCH))<<8)) & 0x03ff;
    
    //Off  ADC
    ADCSRA = 0x00;               // 00000000
@@ -166,13 +180,7 @@ WORD readADC(void)
    return wValue;
 }
  
-/* ================================================ =================
-   Rutina de servicio de interrupción para la finalización de la conversión AD
-      que realmente no hace nada
-   ================================================== =============== */
-ISR(ADC_vect)
-{
-}
+
  
 /* ================================================ =================
    Los valores de salida a las salidas digitales
@@ -181,14 +189,14 @@ ISR(ADC_vect)
       OFF (= 0) LED está apagado (a tierra)
       CAMBIO (= 2) se cambia el estado del LED
    
-   En: (SBYTE) sbLedID
-      (SBYTE) sbLedChange
+   En: (char) sbLedID
+      (char) sbLedChange
    Nix falló
    ================================================== ===============*/
  
 
  
-void controlDO(SBYTE sbLedID, SBYTE sbLedChange)
+/*void controlDO(char sbLedID, char sbLedChange)
 {
 if(sbLedID==LED1) TCCR0A &= ~_BV(COM0A1); else TCCR0A &= ~_BV(COM0B1);
    switch (sbLedChange)
@@ -205,17 +213,17 @@ if(sbLedID==LED1) TCCR0A &= ~_BV(COM0A1); else TCCR0A &= ~_BV(COM0B1);
       default:
          break;
    }
-}
+}*/
  
 /* ================================================ =================
    La inicialización del temporizador de vigilancia y establecer el 
-     Auswachintervalls
+     intervalo 
      se establece en el modo de interrupción
    
-   En: (UBYTE) bTimeConst
+   En: (unsidned char) bTimeConst
    Nix falló
    ================================================== =============== */
-void setWD(UBYTE bTimeConst)
+void setWD(unsigned char bTimeConst)
 {
    // Desactivar interrupción
    cli();
@@ -238,87 +246,85 @@ void setWD(UBYTE bTimeConst)
    Rutina de servicio de interrupción para el procesamiento de las alarmas cíclicas
         => En realidad el programa principal
    ================================================== =============== */
-#define SCHWELLE_NACHT       (WORD)500    //umbrales noche
-#define SCHWELLE_TAG         (WORD)530	//dia
-#define SCHWELLE_TAG_COUNTER (WORD)64   //contador dia
-#define SCHWELLE_BLINKMODE   (SWORD)1   //umbral parpadeo
-#define WARTEZEIT_NACHT      WDTO_120MS //temporizador nocturno
-#define WARTEZEIT_TAG        WDTO_8S  //temporizador diurno
- 
-ISR(WDT_vect)
+
+
+
+
+
+
+void WdtInterrupt(void)
 {
-   WORD wHelligkeit;
-   SWORD swDeltaHelligkeit;
+   unsigned int adcSample;
+   int incrementoLuz;
    
-   if(!fNachtMode && !fPrepareTag)     // Si es de día y el suministro de
-   {                          // LDR está desactivada y habilitar
-      controlDO(ADC_VERSORGUNG,ON); // Espera a algo; sólo entonces consultar
-      fPrepareTag = TRUE;
-      setWD(WARTEZEIT_NACHT);
+   if(!modoNoche && !ldrAlimentada)     // Si es de día y la
+   {                          // LDR está desactivada y habilitar LDR
+      digitalWrite(POWER_LDR,HIGH); // espera el temporizador de noche y entonces mide
+      ldrAlimentada = TRUE;
+      setWD(temporizadorNoche);
    }
    else
    {
-      wHelligkeit = readADC();
-      swDeltaHelligkeit = wHelligkeit - wLetzteHelligkeit;
-      wLetzteHelligkeit = wHelligkeit;
+      adcSample = readADC();
+      incrementoLuz = adcSample - ultimoValorBrillo;
+      ultimoValorBrillo = adcSample;
  
-      if(!fNachtMode)           // Todo lo que hay que hacer en el día
-      {   // -> Probar si ahora es oscuro y el modo nocturno 
-         // Se puede activar
-         if(wHelligkeit < SCHWELLE_NACHT)  // Umbral noche Si está oscuro
+      if(!modoNoche)           // Si es de dia
+      {   
+         if(adcSample < umbralNoche)  // si hay poca luz hay que pasar a noche
          {// => De a modo nocturno
-            fNachtMode = TRUE;
-            setWD(WARTEZEIT_NACHT);
+            modoNoche = TRUE;
+            setWD(temporizadorNoche);
          }
-         else                     // Si todavía es luz 
-         {                        // => Inténtalo de nuevo en 8s
-            controlDO(ADC_VERSORGUNG,OFF);
-            fPrepareTag = FALSE;
-            setWD(WARTEZEIT_TAG);
+         else                     // Si hay mucha luz
+         {                        // desconecta LDR y espera a la siguiente medida
+            digitalWrite(POWER_LDR,LOW);
+            ldrAlimentada = FALSE;
+            setWD(temporizadorDia);
          }
       }
       else             // Todo es lo que debe hacer en la noche
       {
-         if(swDeltaHelligkeit > SCHWELLE_BLINKMODE //umbral de parpadeo
-            && !fBlinkMode)   // Si el brillo en el último ciclo
-         {               // Se ha elevado => rumblinken algo
-            wBlinkCounter = 0;      // Blinkgenerator initialisieren
-            fBlinkMode = TRUE;      // und Blink-Flag setzen
+         if(incrementoLuz > umbralParpadeo 
+            && !modoParpadeo)  //Si se ha incrementado la luz y no estoy parpadeando
+         {               
+            wBlinkCounter = 0;      // Me pongo a parpadear
+            modoParpadeo = TRUE;      
          }
          
-         if(fBlinkMode)         // Inicializa el generador de flash
-         {                  // Set y Bandera parpadeo
+         if(modoParpadeo)         // Si estoy parpadeando
+         {                  // llamo al siguiente caracter morse a enviar
             doBlink();
-            setWD(WARTEZEIT_NACHT);
+            setWD(temporizadorNoche);
          }
-         else         // Si el modo intermitente activo
-         {            // => Probar si ha quedado claro
-            if(wHelligkeit > SCHWELLE_TAG)   
+         else         // Si el modo intermitente no  activo
+         {            
+            if(adcSample > umbralDia)   //Si ya hay luz es de día pero espero a hacer variar medidas para asegurarme
             { // Brillo supera el valor del tag => desde el modo de día
-               wTagCounter++;                  // Pero no inmediatamente
-               if(wTagCounter > SCHWELLE_TAG_COUNTER)   
-               {                       // Pero sólo si hay más de 
-                  fNachtMode = FALSE; // SCHWELLE_TAG_COUNTER era tan x
-                  wTagCounter = 0;
-                  controlDO(ADC_VERSORGUNG,OFF);
-                  fPrepareTag = FALSE;
-                  setWD(WARTEZEIT_TAG);
+               contadorMedidasDia++;                  // Pero no inmediatamente
+               if(contadorMedidasDia > contadorDia)   
+               {                       
+                  modoNoche = FALSE; 
+                  contadorMedidasDia = 0;
+                  digitalWrite(POWER_LDR,LOW);
+                  ldrAlimentada = FALSE;
+                  setWD(temporizadorDia);
                }
                else
                {
-                  setWD(WARTEZEIT_NACHT);
+                  setWD(temporizadorNoche);
                }
             }
-            else            // Si todavía está oscuro   
-            {// => Poner el contador a cero
-               wTagCounter=0;
-               setWD(WARTEZEIT_NACHT);
+            else            // Si todavía está oscuro  sigue siendo de noche y si hubo medida de luz fue un error, contador a 0 
+            {
+               contadorMedidasDia=0;
+               setWD(temporizadorNoche);
             }
          }
       }
    }
-}
- 
+} 
+
 /* =================================================================
    Parpadeo rutina - es llamado por el ISR del perro guardián
    
@@ -326,20 +332,20 @@ ISR(WDT_vect)
    Out: nix
    ================================================================= */
 // Morsecode für "N 50 12 345"
-const UBYTE bSequenz1[] PROGMEM = {    0xe8, 0x0a, 0xa8, 0xee, 
+const unsigned char bSequenz1[] PROGMEM = {    0xe8, 0x0a, 0xa8, 0xee, 
                            0xee, 0xe0, 0x2e, 0xee, 
                            0xe2, 0xbb, 0xb8, 0x0a, 
                            0xbb, 0x8a, 0xae, 0x2a, 
                            0xa0, 0x00, 0x00, 0x00 };
 // Morsecode für "E 008 54 321"
-const UBYTE bSequenz2[] PROGMEM = {    0x80, 0xee, 0xee, 0xe3, 
+const unsigned char bSequenz2[] PROGMEM = {    0x80, 0xee, 0xee, 0xe3, 
                            0xbb, 0xbb, 0x8e, 0xee, 
                            0xa0, 0x2a, 0xa2, 0xab, 
                            0x80, 0xab, 0xb8, 0xae, 
                            0xee, 0x2e, 0xee, 0xe0 };
 void doBlink(void)
 {
-   UBYTE bByte,bBit;
+   unsigned char bByte,bBit;
    /*if(fBDimmerMode==1)
 	{doDimmer();
 	return;}*/
@@ -348,48 +354,48 @@ void doBlink(void)
    {
       // Byte leído de la memoria flash (todo, desde el bit 3 del tapajuntas contador
       // Determina la posición del byte
-      bByte = pgm_read_byte(&bSequenz1[(UBYTE)(wBlinkCounter>>3)]);
+      bByte = pgm_read_byte(&bSequenz1[(unsigned char)(wBlinkCounter>>3)]); //divide entre 8 haciendo 3 rotaciones y lee ese caracter del array
        // Bit 0: 2 determinar el bit en el byte de datos, pero a la inversa
       // Orden
-      bBit = 7 - (UBYTE)(wBlinkCounter&7);
-      // Comprobar si el bit es entonces ......
-      if((bByte&(1<<bBit)) != 0)
-         controlDO(LED1,ON); // ... LED an
-      else               // sonst ...
-         controlDO(LED1,OFF);// ... LED aus
+      bBit = 7 - (unsigned char)(wBlinkCounter&7); //cacula que bit debe de sacar
+      
+      if((bByte&(1<<bBit)) != 0) // Comprobar si el bit es entonces ......
+         digitalWrite(LED1,HIGH); 
+      else               
+         digitalWrite(LED1,LOW);
  
       // Todo el asunto para el otro LED
-      bByte = pgm_read_byte(&bSequenz2[(UBYTE)(wBlinkCounter>>3)]);
+      bByte = pgm_read_byte(&bSequenz2[(unsigned char)(wBlinkCounter>>3)]);
       if((bByte&(1<<bBit)) != 0)
-         controlDO(LED2,ON);
+         digitalWrite(LED2,HIGH);
       else
-         controlDO(LED2,OFF);
+         digitalWrite(LED2,LOW);
    }
    else   // Si la secuencia es más: Switch LEDs
    {
-      controlDO(LED1,OFF);
-      controlDO(LED2,OFF);
+      digitalWrite(LED1,LOW);
+      digitalWrite(LED2,LOW);
    }
    
    if(wBlinkCounter++ > 130) // Dos ciclos más, entonces el 
-      fBlinkMode = FALSE;     // Secuencia a su fin y la bandera se borra
+      modoParpadeo = FALSE;     // Secuencia a su fin y la bandera se borra
 }
  
- /*void doDimmer(void)
+ void doDimmer(void)
  {
- UBYTE n;
+ unsigned char n;
  cli();
  for(n=1;n<255;n++)
- {
- analogWrite(LED1,n);
- //analogWrite(LED2,n);
- _delay_ms(200);
- }
-   controlDO(LED1,OFF);
-   controlDO(LED2,OFF);
-   fBlinkMode = FALSE;
+   {
+   analogWrite(LED1,n);
+   analogWrite(LED2,n);
+   _delay_ms(200);
+   }
+digitalWrite(LED1,LOW);
+digitalWrite(LED2,LOW);
+modoParpadeo = FALSE;
  sei();
- }*/
+ }
  
 /* =================================================================
     Programa principal
@@ -403,20 +409,20 @@ int main (void)
    fBDimmerMode=0;//1 modo dimmer 0 modo Blink
    initChip();
    // Inicializar el estado
-   fNachtMode = FALSE;
-   wLetzteHelligkeit = 0;
-   fBlinkMode = FALSE;
-   wTagCounter = 0;
-   fPrepareTag = FALSE;
-   controlDO(ADC_VERSORGUNG,OFF);
+   modoNoche = FALSE;
+   ultimoValorBrillo = 0;
+   modoParpadeo = FALSE;
+   contadorMedidasDia = 0;
+   ldrAlimentada = FALSE;
+   digitalWrite(POWER_LDR,LOW);
  //doDimmer();
    wBlinkCounter = 0;
    // Habilitar Watchdog y de hecho para el modo día
-    setWD(WARTEZEIT_TAG);
+    setWD(temporizadorDia);
  // Bucle infinito que envía repetidamente que el procesador del sueño
     while(1)
    {
-      if(~fBlinkMode){set_sleep_mode(SLEEP_MODE_PWR_DOWN);
+      if(~modoParpadeo){set_sleep_mode(SLEEP_MODE_PWR_DOWN);
       sleep_enable();
       sleep_cpu();}
    }

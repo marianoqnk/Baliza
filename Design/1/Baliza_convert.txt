@@ -1,0 +1,9 @@
+The conversion of the project was successful.
+
+The new directory structure is as follows:
+
+C:/Users/Nano/Documents/CacheDuino/Baliza/Design/1
+    Baliza.opj
+    baliza.dsn
+C:/Users/Nano/Documents/CacheDuino/Baliza/Design/1/Baliza-PSpiceFiles
+C:/Users/Nano/Documents/CacheDuino/Baliza/Design/1/Baliza-PSpiceFiles/SCHEMATIC1
