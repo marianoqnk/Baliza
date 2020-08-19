@@ -20,7 +20,7 @@ Diseñado * Implementación de la luz reactivo con LDR como de windi
 #include <avr/wdt.h>
 #include <avr/pgmspace.h>
 #include <stdint.h>
-#include <util/delay.h>
+//#include <util/delay.h>
 
  
 /* =================================================================
@@ -56,10 +56,11 @@ boolean fBDimmerMode;
    Rutina de servicio de interrupción para la finalización de la conversión AD
       que realmente no hace nada
    ================================================== =============== */
-void AdcInterrupt(void)
+/*void AdcInterrupt(void)
 {
 }
-void WdtInterrupt(void);
+void WdtInterrupt(void);*/
+ISR(ADC_vect){};
 
  
 /* =================================================================
@@ -98,12 +99,14 @@ void initChip(void)
    // => Ahorra energía
    // No se necesitan entradas digitales // xx111111
    DIDR0 = 0x3F;                                 // 00111111
-   TCCR0A |=  _BV(WGM01) | _BV(WGM00);//modo fast pwm
-   TCCR0B |=  _BV(CS01) |_BV(CS00);//modo normal clock /8 por systen clock preescaler y luego preescaler de timer
+   //TCCR0A |=  _BV(WGM01) | _BV(WGM00);//modo fast pwm
+   //TCCR0B |=  _BV(CS01) |_BV(CS00);//modo normal clock /8 por systen clock preescaler y luego preescaler de timer
 						//9,6Mhz/8 = 1,2Mhz preescales+r 1024 = 1,1Khz
-   attachInterrupt(9,AdcInterrupt,RISING);
-   attachInterrupt(8,WdtInterrupt,RISING);
+   //attachInterrupt(9,AdcInterrupt,RISING);
+   //attachInterrupt(8,WdtInterrupt,RISING);
 }
+ 
+
 /*void analogWrite(unsidned char pin, unsidned char value)
 {
  
@@ -247,7 +250,7 @@ void setWD(unsigned char bTimeConst)
 
 
 
-void WdtInterrupt(void)
+ISR(WDT_vect) //void WdtInterrupt(void)
 {
    unsigned int brilloActual;
    int incrementoBrillo;
