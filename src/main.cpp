@@ -1,13 +1,13 @@
 /*
 * -------------------------------------------------------------------------
-* Luz reactiva para cachés de noche con Atmel ATtiny 13V
-* Versión 0.4 para RL_V0.3 circuito
+* Baliza activada por luz para cachés de noche con Atmel ATtiny 13V
+* Versión 0.1 para RL_V0.3 circuito
 * -------------------------------------------------------------------------
 *
 *
 * Se originó en la sub-electrónica foro sobre http://www.geoclub.de
 * (Http://www.geoclub.de/ftopic5753.html)
-*
+* http://reaktivlicht.pbworks.com/w/page/3708758/FrontPage
 Diseñado * Implementación de la luz reactivo con LDR como de windi
 * En C, el consumo de energía se minimiza tanto como sea posible.
 *
@@ -27,34 +27,29 @@ Diseñado * Implementación de la luz reactivo con LDR como de windi
    Declaraciones
    ================================================================= */
  
-#define umbralNoche       (unsigned int)500    //umbrales LDR noche
-#define umbralDia         (unsigned int)530	//umbral LDR dia
-#define contadorDia (unsigned int)64   //numero de veces que tiene que haber mucha luz para pasar a modo día
-#define umbralParpadeo   (int)1   //umbral parpadeo
-#define temporizadorNoche      WDTO_120MS //temporizador nocturno
-#define temporizadorDia        WDTO_8S  //temporizador diurno
+#define UMBRAL_NOCHE       (unsigned int)500    //umbrales LDR noche
+#define UMBRAL_DIA         (unsigned int)530	//umbral LDR dia
+#define UMBRAL_DIA_COUNTER (unsigned int)64   //numero de veces que tiene que haber mucha luz para pasar a modo día
+#define INC_BRILLO_ENVIAR   (int)1   //umbral parpadeo
+#define TEMPORIZADOR_NOCHE      WDTO_120MS //temporizador nocturno
+#define TEMPORIZADOR_DIA        WDTO_8S  //temporizador diurno
 
 #define LED1 PORTB0 //PIN 5
 #define LED2 PORTB1 //PIN 6
-#define POWER_LDR PORTB3 // ENCENDER Y APAGAR LA ALIMENTACION DEL LED PIN 2
+#define LDR_POWER PORTB3 // ENCENDER Y APAGAR LA ALIMENTACION DEL LED PIN 2
 //PB4 PIN3 ENTRADA ADC2
 //PB2 PIN7 LIBRE
 #define TOGGLE 2
- 
-void doBlink(void);
+enum enum_estado {DIA_LDR,DIA,NOCHE,ENVIANDO,CAMBIANDO} estado; 
+boolean doBlink(void);
 //void digitalWrite(char , char );
  
 /* =================================================================
    Las variables globales del Estado
    ================================================================= */
 
-unsigned int ultimoValorBrillo;   // Cache el último valor de brillo
-boolean modoNoche;        //== TRUE si el modo nocturno está activo
-boolean modoParpadeo;      // == TRUE si el LED parpadea
-boolean ldrAlimentada;     // == TRUE si en el modo de día, la oferta de la LDR 
-                  // ¿Está activado y se puede hacer la consulta
-unsigned int contadorMedidasDia;      // Cuente cuántas veces "días" mide
- 
+unsigned int brilloAnterior;   // Cache el último valor de brillo
+unsigned int contadorUmbralDiaSuperado;      // Cuente cuántas veces "días" mide
 unsigned int wBlinkCounter;      // Contador para el generador de flash
 boolean fBDimmerMode;
 /* ================================================ =================
@@ -87,10 +82,10 @@ void initChip(void)
     // IO Digital
    // ------------------------------------------------ ------
    // En primer lugar en la entrada 
-   // Excepto por LED1, LED2, el POWER_LDR // xx001011
+   // Excepto por LED1, LED2, el LDR_POWER // xx001011
    pinMode(LED1,OUTPUT);
    pinMode(LED2,OUTPUT);
-   pinMode(POWER_LDR,OUTPUT);
+   pinMode(LDR_POWER,OUTPUT);
    //DDRB = 0x0b;                                 // 00001011
      // Resistencias pull-up para todo, excepto para el
    // salidas digitales y la ADC2 entrada analógica 
@@ -114,7 +109,7 @@ void initChip(void)
  
   if(pin==LED1)
   {
-	  if(value==0) digitalWrite(PORTB0, OFF);
+	  if(value==0) digitalWrite(PORTB0, LOW);
 	  else  {
 	  TCCR0A |= _BV(COM0A1); //activa que el pin vaya a OCR0A ponerlo a 0 para operacion normal
 	  OCR0A = value;
@@ -122,7 +117,7 @@ void initChip(void)
   }
   else if(pin==LED2)
   {
-	if(value==0) digitalWrite(PORTB1, OFF);
+	if(value==0) digitalWrite(PORTB1, LOW);
 	  else{
 	  TCCR0A |=  _BV(COM0B1);//activa que el pin vaya a OCR0B ponerlo a 0 para operacion normal
 	  OCR0B = value;
@@ -148,7 +143,7 @@ unsigned int readADC(void)
    // Modo de sueño más profundo, lo que permite un despertar por ADC
    set_sleep_mode(SLEEP_MODE_ADC); 
    sleep_enable();
-   sei();
+   sei(); //Enable interrupt
  
    // ADC en, // 1XXXXXXX
    // // ADC inicio x1xxxxxx
@@ -168,7 +163,7 @@ unsigned int readADC(void)
    // Buenos días, procesador! Dormimos bien ...
    // ... Y para que no se duerma otra vez:
    sleep_disable();
-   cli();
+   cli(); //Disable interrupts
  
    // Leer el valor (los dos bits más bajos de ADCH 
    // (8 bit desplazado a la izquierda) + ADCL
@@ -196,7 +191,7 @@ unsigned int readADC(void)
  
 
  
-/*void controlDO(char sbLedID, char sbLedChange)
+/*void digitalWrite(char sbLedID, char sbLedChange)
 {
 if(sbLedID==LED1) TCCR0A &= ~_BV(COM0A1); else TCCR0A &= ~_BV(COM0B1);
    switch (sbLedChange)
@@ -254,38 +249,108 @@ void setWD(unsigned char bTimeConst)
 
 void WdtInterrupt(void)
 {
-   unsigned int adcSample;
+   unsigned int brilloActual;
+   int incrementoBrillo;
+
+switch(estado)
+   {
+         case DIA:
+            digitalWrite(LDR_POWER,HIGH); // Espera a algo; sólo entonces consultar
+            setWD(TEMPORIZADOR_NOCHE); //ok
+            estado=DIA_LDR;
+            break;
+
+         case ENVIANDO:
+            if(doBlink())estado=NOCHE; //Envia
+            setWD(TEMPORIZADOR_NOCHE);
+            break;
+
+         brilloActual = readADC();
+         incrementoBrillo = brilloActual - brilloAnterior;
+         brilloAnterior = brilloActual;
+
+         case DIA_LDR:
+            if(brilloActual < UMBRAL_NOCHE)  // Umbral noche Si está oscuro
+            {// => De a modo nocturno
+               
+               setWD(TEMPORIZADOR_NOCHE);
+               estado=NOCHE;
+            }else                     // Si todavía es luz 
+            {                        // => Inténtalo de nuevo en 8s
+               digitalWrite(LDR_POWER,LOW);
+               setWD(TEMPORIZADOR_DIA);
+               estado=DIA;
+            }
+            break;
+
+         case NOCHE:
+            if(incrementoBrillo > INC_BRILLO_ENVIAR )   // Si el brillo en el último ciclo
+               {               // Se ha elevado => rumblinken algo
+                  wBlinkCounter = 0;      // Blinkgenerator initialisieren
+                  estado=ENVIANDO;
+               }
+            else if(brilloActual > UMBRAL_DIA) estado=CAMBIANDO;         
+            break;
+
+         case CAMBIANDO:
+            if(brilloActual > UMBRAL_DIA)   //tiene que superar el umbral de día por UMBRAL_DIA_COUNTER veces
+            { 
+               contadorUmbralDiaSuperado++;                  
+               if(contadorUmbralDiaSuperado > UMBRAL_DIA_COUNTER)   //Si supera el número de veces, es de día
+               {                       
+                  estado=DIA;
+                  contadorUmbralDiaSuperado = 0;
+                  digitalWrite(LDR_POWER,LOW);
+                  setWD(TEMPORIZADOR_DIA);
+               }
+               else setWD(TEMPORIZADOR_NOCHE);
+               
+            }
+            else            // Si todavía está oscuro, fue un error de medida.  vuelta a la noche
+            {
+               contadorUmbralDiaSuperado=0;
+               estado=NOCHE;
+               setWD(TEMPORIZADOR_NOCHE);
+            }
+            break;
+     
+   }  
+
+
+
+
+  /* unsigned int adcSample;
    int incrementoLuz;
    
    if(!modoNoche && !ldrAlimentada)     // Si es de día y la
    {                          // LDR está desactivada y habilitar LDR
-      digitalWrite(POWER_LDR,HIGH); // espera el temporizador de noche y entonces mide
+      digitalWrite(LDR_POWER,HIGH); // espera el temporizador de noche y entonces mide
       ldrAlimentada = TRUE;
-      setWD(temporizadorNoche);
+      setWD(TEMPORIZADOR_NOCHE);
    }
    else
    {
       adcSample = readADC();
-      incrementoLuz = adcSample - ultimoValorBrillo;
-      ultimoValorBrillo = adcSample;
+      incrementoLuz = adcSample - brilloAnterior;
+      brilloAnterior = adcSample;
  
       if(!modoNoche)           // Si es de dia
       {   
-         if(adcSample < umbralNoche)  // si hay poca luz hay que pasar a noche
+         if(adcSample < UMBRAL_NOCHE)  // si hay poca luz hay que pasar a noche
          {// => De a modo nocturno
             modoNoche = TRUE;
-            setWD(temporizadorNoche);
+            setWD(TEMPORIZADOR_NOCHE);
          }
          else                     // Si hay mucha luz
          {                        // desconecta LDR y espera a la siguiente medida
-            digitalWrite(POWER_LDR,LOW);
+            digitalWrite(LDR_POWER,LOW);
             ldrAlimentada = FALSE;
-            setWD(temporizadorDia);
+            setWD(TEMPORIZADOR_DIA);
          }
       }
       else             // Todo es lo que debe hacer en la noche
       {
-         if(incrementoLuz > umbralParpadeo 
+         if(incrementoLuz > INC_BRILLO_ENVIAR 
             && !modoParpadeo)  //Si se ha incrementado la luz y no estoy parpadeando
          {               
             wBlinkCounter = 0;      // Me pongo a parpadear
@@ -295,34 +360,34 @@ void WdtInterrupt(void)
          if(modoParpadeo)         // Si estoy parpadeando
          {                  // llamo al siguiente caracter morse a enviar
             doBlink();
-            setWD(temporizadorNoche);
+            setWD(TEMPORIZADOR_NOCHE);
          }
          else         // Si el modo intermitente no  activo
          {            
-            if(adcSample > umbralDia)   //Si ya hay luz es de día pero espero a hacer variar medidas para asegurarme
+            if(adcSample > UMBRAL_DIA)   //Si ya hay luz es de día pero espero a hacer variar medidas para asegurarme
             { // Brillo supera el valor del tag => desde el modo de día
-               contadorMedidasDia++;                  // Pero no inmediatamente
-               if(contadorMedidasDia > contadorDia)   
+               contadorUmbralDiaSuperado++;                  // Pero no inmediatamente
+               if(contadorUmbralDiaSuperado > UMBRAL_DIA_COUNTER)   
                {                       
                   modoNoche = FALSE; 
-                  contadorMedidasDia = 0;
-                  digitalWrite(POWER_LDR,LOW);
+                  contadorUmbralDiaSuperado = 0;
+                  digitalWrite(LDR_POWER,LOW);
                   ldrAlimentada = FALSE;
-                  setWD(temporizadorDia);
+                  setWD(TEMPORIZADOR_DIA);
                }
                else
                {
-                  setWD(temporizadorNoche);
+                  setWD(TEMPORIZADOR_NOCHE);
                }
             }
             else            // Si todavía está oscuro  sigue siendo de noche y si hubo medida de luz fue un error, contador a 0 
             {
-               contadorMedidasDia=0;
-               setWD(temporizadorNoche);
+               contadorUmbralDiaSuperado=0;
+               setWD(TEMPORIZADOR_NOCHE);
             }
          }
       }
-   }
+   }*/
 } 
 
 /* =================================================================
@@ -343,7 +408,7 @@ const unsigned char bSequenz2[] PROGMEM = {    0x80, 0xee, 0xee, 0xe3,
                            0xa0, 0x2a, 0xa2, 0xab, 
                            0x80, 0xab, 0xb8, 0xae, 
                            0xee, 0x2e, 0xee, 0xe0 };
-void doBlink(void)
+boolean doBlink(void)
 {
    unsigned char bByte,bBit;
    /*if(fBDimmerMode==1)
@@ -378,7 +443,8 @@ void doBlink(void)
    }
    
    if(wBlinkCounter++ > 130) // Dos ciclos más, entonces el 
-      modoParpadeo = FALSE;     // Secuencia a su fin y la bandera se borra
+      return true;     // Secuencia a su fin y la bandera se borra
+   return false;
 }
  
  void doDimmer(void)
@@ -393,7 +459,7 @@ void doBlink(void)
    }
 digitalWrite(LED1,LOW);
 digitalWrite(LED2,LOW);
-modoParpadeo = FALSE;
+//modoParpadeo = FALSE;
  sei();
  }
  
@@ -407,24 +473,24 @@ int main (void)
 {
    // Inicializar el chip
    fBDimmerMode=0;//1 modo dimmer 0 modo Blink
-   initChip();
-   // Inicializar el estado
-   modoNoche = FALSE;
-   ultimoValorBrillo = 0;
-   modoParpadeo = FALSE;
-   contadorMedidasDia = 0;
-   ldrAlimentada = FALSE;
-   digitalWrite(POWER_LDR,LOW);
+   initChip();   // Inicializar el estado
+   estado=DIA;
+   brilloAnterior = 0;
+   //modoParpadeo = FALSE;
+   contadorUmbralDiaSuperado = 0;
+   digitalWrite(LDR_POWER,LOW);
  //doDimmer();
    wBlinkCounter = 0;
    // Habilitar Watchdog y de hecho para el modo día
-    setWD(temporizadorDia);
+    setWD(TEMPORIZADOR_DIA);
  // Bucle infinito que envía repetidamente que el procesador del sueño
     while(1)
    {
-      if(~modoParpadeo){set_sleep_mode(SLEEP_MODE_PWR_DOWN);
+      set_sleep_mode(SLEEP_MODE_PWR_DOWN);
       sleep_enable();
-      sleep_cpu();}
+      //sleep_bod_disable(); //no hace falta si esta deshabilitado por soft
+      sleep_cpu();
+     
    }
         
     return (0);
