@@ -246,7 +246,18 @@ void setWD(unsigned char bTimeConst)
    ================================================== =============== */
 
 
-
+void senalizaEstado()
+{
+   cli();
+   for(char n=0;n<estado;n++)
+   {
+   digitalWrite(LED1,HIGH);
+   delay(2);
+   digitalWrite(LED1,LOW);
+   delay(2);
+   }
+   sei();
+}
 
 
 
@@ -255,47 +266,70 @@ ISR(WDT_vect) //void WdtInterrupt(void)
    unsigned int brilloActual;
    int incrementoBrillo;
 
+      if(estado!=DIA && estado!=ENVIANDO){  
+         brilloActual = readADC();
+         incrementoBrillo = brilloActual - brilloAnterior;
+         brilloAnterior = brilloActual;      
+         }
 switch(estado)
    {
          case DIA:
+          /*  digitalWrite(LED1,HIGH);
+   delay(2);
+   digitalWrite(LED1,LOW);
+   delay(2);*/
             digitalWrite(LDR_POWER,HIGH); // Espera a algo; sólo entonces consultar
-            setWD(TEMPORIZADOR_NOCHE); //ok
             estado=DIA_LDR;
+            setWD(TEMPORIZADOR_NOCHE); //ok
             break;
 
          case ENVIANDO:
+         //senalizaEstado();
             if(doBlink())estado=NOCHE; //Envia
             setWD(TEMPORIZADOR_NOCHE);
             break;
-
-         brilloActual = readADC();
+         /*brilloActual = readADC();
          incrementoBrillo = brilloActual - brilloAnterior;
-         brilloAnterior = brilloActual;
+         brilloAnterior = brilloActual;*/
+
 
          case DIA_LDR:
+            /*digitalWrite(LED2,HIGH);
+   delay(2);
+   digitalWrite(LED2,LOW);
+   delay(2);*/
             if(brilloActual < UMBRAL_NOCHE)  // Umbral noche Si está oscuro
             {// => De a modo nocturno
-               
-               setWD(TEMPORIZADOR_NOCHE);
                estado=NOCHE;
-            }else                     // Si todavía es luz 
+               setWD(TEMPORIZADOR_NOCHE);
+               
+            }else                     // Si todavía es luz apago la LDR
             {                        // => Inténtalo de nuevo en 8s
                digitalWrite(LDR_POWER,LOW);
-               setWD(TEMPORIZADOR_DIA);
                estado=DIA;
+               setWD(TEMPORIZADOR_DIA);
+               
             }
             break;
 
          case NOCHE:
+                  /* digitalWrite(LED2,HIGH);
+                   digitalWrite(LED1,HIGH);
+                  delay(2);
+                  digitalWrite(LED2,LOW);
+                  digitalWrite(LED1,LOW);
+                  delay(2);*/
             if(incrementoBrillo > INC_BRILLO_ENVIAR )   // Si el brillo en el último ciclo
                {               // Se ha elevado => rumblinken algo
                   wBlinkCounter = 0;      // Blinkgenerator initialisieren
                   estado=ENVIANDO;
                }
-            else if(brilloActual > UMBRAL_DIA) estado=CAMBIANDO;         
+            else if(brilloActual > UMBRAL_DIA) estado=CAMBIANDO;    
+            setWD(TEMPORIZADOR_NOCHE);     
             break;
 
          case CAMBIANDO:
+         //senalizaEstado();
             if(brilloActual > UMBRAL_DIA)   //tiene que superar el umbral de día por UMBRAL_DIA_COUNTER veces
             { 
                contadorUmbralDiaSuperado++;                  
