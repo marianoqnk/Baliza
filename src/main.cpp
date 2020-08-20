@@ -20,7 +20,6 @@ Diseñado * Implementación de la luz reactivo con LDR como de windi
 #include <avr/wdt.h>
 #include <avr/pgmspace.h>
 #include <stdint.h>
-//#include <util/delay.h>
 
  
 /* =================================================================
@@ -42,26 +41,23 @@ Diseñado * Implementación de la luz reactivo con LDR como de windi
 #define TOGGLE 2
 enum enum_estado {DIA_LDR,DIA,NOCHE,ENVIANDO,CAMBIANDO} estado; 
 boolean doBlink(void);
-//void digitalWrite(char , char );
+
  
 /* =================================================================
    Las variables globales del Estado
    ================================================================= */
 
-unsigned int brilloAnterior;   // Cache el último valor de brillo
-unsigned int contadorUmbralDiaSuperado;      // Cuente cuántas veces "días" mide
-unsigned int wBlinkCounter;      // Contador para el generador de flash
-boolean fBDimmerMode;
+unsigned int brilloAnterior=0;   // Cache el último valor de brillo
+unsigned int contadorUmbralDiaSuperado=0;      // Cuente cuántas veces "días" mide
+unsigned int wBlinkCounter=0;      // Contador para el generador de flash
+
+
 /* ================================================ =================
    Rutina de servicio de interrupción para la finalización de la conversión AD
       que realmente no hace nada
    ================================================== =============== */
-/*void AdcInterrupt(void)
-{
-}
-void WdtInterrupt(void);*/
-ISR(ADC_vect){};
 
+ISR(ADC_vect){};
  
 /* =================================================================
     Inicialización del chip
@@ -71,19 +67,8 @@ ISR(ADC_vect){};
    ================================================================= */
 void initChip(void)
 {
-   // ADC
-   // ------------------------------------------------ ------
-                                 
-   // Habilitar ADC2 (pin 3) // XXXXXX10
-   // // Vcc como tensión de referencia x0xxxxxx
-   //Alineado a la derecha  Resultados xx0xxxxx
    
-   ADMUX = 0x02;                     // 00000010
- 
-    // IO Digital
-   // ------------------------------------------------ ------
-   // En primer lugar en la entrada 
-   // Excepto por LED1, LED2, el LDR_POWER // xx001011
+   ADMUX = 0x02;                     // Habilitar ADC2 (pin 3)
    pinMode(LED1,OUTPUT);
    pinMode(LED2,OUTPUT);
    pinMode(LDR_POWER,OUTPUT);
@@ -92,6 +77,7 @@ void initChip(void)
    // salidas digitales y la ADC2 entrada analógica 
    // Habilitar (PB4) // xx100100
    // Save => actual objetivo
+   //Pines a PullUP para reducir consumo?
    digitalWrite(2,HIGH);//pone los pines no utilizdos a 1 para reducir el consumo
    digitalWrite(5,HIGH);
    //PORTB = 0x24;    //valor de salida                              // 00100100
@@ -99,35 +85,8 @@ void initChip(void)
    // => Ahorra energía
    // No se necesitan entradas digitales // xx111111
    DIDR0 = 0x3F;                                 // 00111111
-   //TCCR0A |=  _BV(WGM01) | _BV(WGM00);//modo fast pwm
-   //TCCR0B |=  _BV(CS01) |_BV(CS00);//modo normal clock /8 por systen clock preescaler y luego preescaler de timer
-						//9,6Mhz/8 = 1,2Mhz preescales+r 1024 = 1,1Khz
-   //attachInterrupt(9,AdcInterrupt,RISING);
-   //attachInterrupt(8,WdtInterrupt,RISING);
 }
  
-
-/*void analogWrite(unsidned char pin, unsidned char value)
-{
- 
-  if(pin==LED1)
-  {
-	  if(value==0) digitalWrite(PORTB0, LOW);
-	  else  {
-	  TCCR0A |= _BV(COM0A1); //activa que el pin vaya a OCR0A ponerlo a 0 para operacion normal
-	  OCR0A = value;
-	  }
-  }
-  else if(pin==LED2)
-  {
-	if(value==0) digitalWrite(PORTB1, LOW);
-	  else{
-	  TCCR0A |=  _BV(COM0B1);//activa que el pin vaya a OCR0B ponerlo a 0 para operacion normal
-	  OCR0B = value;
-	  }
-  }
-  
-}*/
  
 /* ================================================ =================
    La lectura de la entrada analógica
@@ -141,10 +100,7 @@ unsigned int readADC(void)
 {
    unsigned int wValue;
    
-   // Preparar el tendido sueño del procesador
-   // -> Procesador en el modo de envío de reducción de ruido ADC: 
-   // Modo de sueño más profundo, lo que permite un despertar por ADC
-   set_sleep_mode(SLEEP_MODE_ADC); 
+   set_sleep_mode(SLEEP_MODE_ADC); //Seleciona el modo dormir y que lo despierte el ADC
    sleep_enable();
    sei(); //Enable interrupt
  
@@ -161,57 +117,16 @@ unsigned int readADC(void)
                         // Propuesta NC666: Probablemente hace falta establecer ADSC poco
                      // A continuación, el ADC se inicia en el modo de suspensión automática - Todavía no he probado
  
-   //Enviar a dormir  procesador
-   sleep_cpu();
-   // Buenos días, procesador! Dormimos bien ...
-   // ... Y para que no se duerma otra vez:
+   
+   sleep_cpu(); //Enviar a dormir  procesador durante la conversion
    sleep_disable();
    cli(); //Disable interrupts
- 
-   // Leer el valor (los dos bits más bajos de ADCH 
-   // (8 bit desplazado a la izquierda) + ADCL
-   wValue = ((unsigned int)ADCL + (((unsigned int)(ADCH))<<8)) & 0x03ff;
-   
-   //Off  ADC
-   ADCSRA = 0x00;               // 00000000
-   
+   wValue = ((unsigned int)ADCL + (((unsigned int)(ADCH))<<8)) & 0x03ff;   
+   ADCSRA = 0x00;              //Off  ADC
    return wValue;
 }
  
 
- 
-/* ================================================ =================
-   Los valores de salida a las salidas digitales
-    estados posibles:
-      ON (= 1) LED está encendido (conectado a Vcc)
-      OFF (= 0) LED está apagado (a tierra)
-      CAMBIO (= 2) se cambia el estado del LED
-   
-   En: (char) sbLedID
-      (char) sbLedChange
-   Nix falló
-   ================================================== ===============*/
- 
-
- 
-/*void digitalWrite(char sbLedID, char sbLedChange)
-{
-if(sbLedID==LED1) TCCR0A &= ~_BV(COM0A1); else TCCR0A &= ~_BV(COM0B1);
-   switch (sbLedChange)
-   {
-      case ON:   // Einschalten
-         PORTB |= _BV(sbLedID);
-         break;
-      case OFF:   // Ausschalten
-         PORTB &= ~_BV(sbLedID);
-         break;
-      case TOGGLE:// Zustand tauschen
-         PORTB ^= _BV(sbLedID);
-         break;
-      default:
-         break;
-   }
-}*/
  
 /* ================================================ =================
    La inicialización del temporizador de vigilancia y establecer el 
@@ -223,9 +138,8 @@ if(sbLedID==LED1) TCCR0A &= ~_BV(COM0A1); else TCCR0A &= ~_BV(COM0B1);
    ================================================== =============== */
 void setWD(unsigned char bTimeConst)
 {
-   // Desactivar interrupción
-   cli();
-   // Establecer hora
+   
+   cli(); // Desactivar interrupción
    wdt_enable(bTimeConst);
    // Reinicio de la vigilancia Disable (sólo queremos interrumpir)
    // Primero borrar el bit correspondiente en MCUSR, de lo contrario, la enmienda
@@ -236,8 +150,7 @@ void setWD(unsigned char bTimeConst)
    // WDCE WDCE debe configurarse -> 1
    // Cambiar WDE off -> 0                           WDE  -> 0
    WDTCR = (WDTCR & ~_BV(WDE)) |_BV(WDCE) |_BV(WDTIE);
-   // Interruptor de Interrupción
-   sei();
+   sei();// Habilita interrupciones
 }
  
 /* ================================================ =================
@@ -245,59 +158,30 @@ void setWD(unsigned char bTimeConst)
         => En realidad el programa principal
    ================================================== =============== */
 
-
-void senalizaEstado()
+ISR(WDT_vect) //INterrupcion del WatchDog
 {
-   cli();
-   for(char n=0;n<estado;n++)
-   {
-   digitalWrite(LED1,HIGH);
-   delay(2);
-   digitalWrite(LED1,LOW);
-   delay(2);
+unsigned int brilloActual;
+int incrementoBrillo;
+
+if(estado!=DIA && estado!=ENVIANDO){  
+   brilloActual = readADC();
+   incrementoBrillo = brilloActual - brilloAnterior;
+   brilloAnterior = brilloActual;      
    }
-   sei();
-}
-
-
-
-ISR(WDT_vect) //void WdtInterrupt(void)
-{
-   unsigned int brilloActual;
-   int incrementoBrillo;
-
-      if(estado!=DIA && estado!=ENVIANDO){  
-         brilloActual = readADC();
-         incrementoBrillo = brilloActual - brilloAnterior;
-         brilloAnterior = brilloActual;      
-         }
 switch(estado)
    {
-         case DIA:
-          /*  digitalWrite(LED1,HIGH);
-   delay(2);
-   digitalWrite(LED1,LOW);
-   delay(2);*/
+      case DIA:
             digitalWrite(LDR_POWER,HIGH); // Espera a algo; sólo entonces consultar
             estado=DIA_LDR;
             setWD(TEMPORIZADOR_NOCHE); //ok
             break;
 
-         case ENVIANDO:
-         //senalizaEstado();
+      case ENVIANDO:
             if(doBlink())estado=NOCHE; //Envia
             setWD(TEMPORIZADOR_NOCHE);
             break;
-         /*brilloActual = readADC();
-         incrementoBrillo = brilloActual - brilloAnterior;
-         brilloAnterior = brilloActual;*/
 
-
-         case DIA_LDR:
-            /*digitalWrite(LED2,HIGH);
-   delay(2);
-   digitalWrite(LED2,LOW);
-   delay(2);*/
+      case DIA_LDR:
             if(brilloActual < UMBRAL_NOCHE)  // Umbral noche Si está oscuro
             {// => De a modo nocturno
                estado=NOCHE;
@@ -312,13 +196,7 @@ switch(estado)
             }
             break;
 
-         case NOCHE:
-                  /* digitalWrite(LED2,HIGH);
-                   digitalWrite(LED1,HIGH);
-                  delay(2);
-                  digitalWrite(LED2,LOW);
-                  digitalWrite(LED1,LOW);
-                  delay(2);*/
+      case NOCHE:
             if(incrementoBrillo > INC_BRILLO_ENVIAR )   // Si el brillo en el último ciclo
                {               // Se ha elevado => rumblinken algo
                   wBlinkCounter = 0;      // Blinkgenerator initialisieren
@@ -328,8 +206,7 @@ switch(estado)
             setWD(TEMPORIZADOR_NOCHE);     
             break;
 
-         case CAMBIANDO:
-         //senalizaEstado();
+      case CAMBIANDO:
             if(brilloActual > UMBRAL_DIA)   //tiene que superar el umbral de día por UMBRAL_DIA_COUNTER veces
             { 
                contadorUmbralDiaSuperado++;                  
@@ -352,79 +229,6 @@ switch(estado)
             break;
      
    }  
-
-
-
-
-  /* unsigned int adcSample;
-   int incrementoLuz;
-   
-   if(!modoNoche && !ldrAlimentada)     // Si es de día y la
-   {                          // LDR está desactivada y habilitar LDR
-      digitalWrite(LDR_POWER,HIGH); // espera el temporizador de noche y entonces mide
-      ldrAlimentada = TRUE;
-      setWD(TEMPORIZADOR_NOCHE);
-   }
-   else
-   {
-      adcSample = readADC();
-      incrementoLuz = adcSample - brilloAnterior;
-      brilloAnterior = adcSample;
- 
-      if(!modoNoche)           // Si es de dia
-      {   
-         if(adcSample < UMBRAL_NOCHE)  // si hay poca luz hay que pasar a noche
-         {// => De a modo nocturno
-            modoNoche = TRUE;
-            setWD(TEMPORIZADOR_NOCHE);
-         }
-         else                     // Si hay mucha luz
-         {                        // desconecta LDR y espera a la siguiente medida
-            digitalWrite(LDR_POWER,LOW);
-            ldrAlimentada = FALSE;
-            setWD(TEMPORIZADOR_DIA);
-         }
-      }
-      else             // Todo es lo que debe hacer en la noche
-      {
-         if(incrementoLuz > INC_BRILLO_ENVIAR 
-            && !modoParpadeo)  //Si se ha incrementado la luz y no estoy parpadeando
-         {               
-            wBlinkCounter = 0;      // Me pongo a parpadear
-            modoParpadeo = TRUE;      
-         }
-         
-         if(modoParpadeo)         // Si estoy parpadeando
-         {                  // llamo al siguiente caracter morse a enviar
-            doBlink();
-            setWD(TEMPORIZADOR_NOCHE);
-         }
-         else         // Si el modo intermitente no  activo
-         {            
-            if(adcSample > UMBRAL_DIA)   //Si ya hay luz es de día pero espero a hacer variar medidas para asegurarme
-            { // Brillo supera el valor del tag => desde el modo de día
-               contadorUmbralDiaSuperado++;                  // Pero no inmediatamente
-               if(contadorUmbralDiaSuperado > UMBRAL_DIA_COUNTER)   
-               {                       
-                  modoNoche = FALSE; 
-                  contadorUmbralDiaSuperado = 0;
-                  digitalWrite(LDR_POWER,LOW);
-                  ldrAlimentada = FALSE;
-                  setWD(TEMPORIZADOR_DIA);
-               }
-               else
-               {
-                  setWD(TEMPORIZADOR_NOCHE);
-               }
-            }
-            else            // Si todavía está oscuro  sigue siendo de noche y si hubo medida de luz fue un error, contador a 0 
-            {
-               contadorUmbralDiaSuperado=0;
-               setWD(TEMPORIZADOR_NOCHE);
-            }
-         }
-      }
-   }*/
 } 
 
 /* =================================================================
@@ -447,11 +251,7 @@ const unsigned char bSequenz2[] PROGMEM = {    0x80, 0xee, 0xee, 0xe3,
                            0xee, 0x2e, 0xee, 0xe0 };
 boolean doBlink(void)
 {
-   unsigned char bByte,bBit;
-   /*if(fBDimmerMode==1)
-	{doDimmer();
-	return;}*/
-   
+   unsigned char bByte,bBit;   
    if(wBlinkCounter < 128)
    {
       // Byte leído de la memoria flash (todo, desde el bit 3 del tapajuntas contador
@@ -484,21 +284,6 @@ boolean doBlink(void)
    return false;
 }
  
- void doDimmer(void)
- {
- unsigned char n;
- cli();
- for(n=1;n<255;n++)
-   {
-   analogWrite(LED1,n);
-   analogWrite(LED2,n);
-   _delay_ms(200);
-   }
-digitalWrite(LED1,LOW);
-digitalWrite(LED2,LOW);
-//modoParpadeo = FALSE;
- sei();
- }
  
 /* =================================================================
     Programa principal
@@ -508,27 +293,17 @@ digitalWrite(LED2,LOW);
    ================================================================= */
 int main (void)
 {
-   // Inicializar el chip
-   fBDimmerMode=0;//1 modo dimmer 0 modo Blink
-   initChip();   // Inicializar el estado
+
+   initChip();   // Inicializar el micro
    estado=DIA;
-   brilloAnterior = 0;
-   //modoParpadeo = FALSE;
-   contadorUmbralDiaSuperado = 0;
-   digitalWrite(LDR_POWER,LOW);
- //doDimmer();
-   wBlinkCounter = 0;
-   // Habilitar Watchdog y de hecho para el modo día
-    setWD(TEMPORIZADOR_DIA);
- // Bucle infinito que envía repetidamente que el procesador del sueño
-    while(1)
+   digitalWrite(LDR_POWER,LOW); //Quita alimentacion a LDR
+   setWD(TEMPORIZADOR_DIA);// Habilitar Watchdog y de hecho para el modo día
+   while(1)  // Bucle infinito que envía repetidamente que el procesador a dormir
    {
       set_sleep_mode(SLEEP_MODE_PWR_DOWN);
       sleep_enable();
-      //sleep_bod_disable(); //no hace falta si esta deshabilitado por soft
       sleep_cpu();
      
-   }
-        
-    return (0);
+   }       
+   return (0);
 }
