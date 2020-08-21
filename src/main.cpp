@@ -32,6 +32,8 @@ Diseñado * Implementación de la luz reactivo con LDR como de windi
 #define INC_BRILLO_ENVIAR   (int)1   //umbral parpadeo
 #define TEMPORIZADOR_NOCHE      WDTO_120MS //temporizador nocturno
 #define TEMPORIZADOR_DIA        WDTO_8S  //temporizador diurno
+#define TEMPORIZADOR_ENVIO      WDTO_60MS   //Duracion del encendido de los LED
+ //temporizador nocturno
 
 #define LED1 PORTB0 //PIN 5
 #define LED2 PORTB1 //PIN 6
@@ -39,7 +41,7 @@ Diseñado * Implementación de la luz reactivo con LDR como de windi
 //PB4 PIN3 ENTRADA ADC2
 //PB2 PIN7 LIBRE
 #define TOGGLE 2
-enum enum_estado {DIA_LDR,DIA,NOCHE,ENVIANDO,CAMBIANDO} estado; 
+enum enum_estado {DIA_LDR,DIA,NOCHE,ENVIANDO,CAMBIANDO,LED_ON} estado; 
 boolean doBlink(void);
 
  
@@ -102,22 +104,13 @@ unsigned int readADC(void)
    
    set_sleep_mode(SLEEP_MODE_ADC); //Seleciona el modo dormir y que lo despierte el ADC
    sleep_enable();
-   sei(); //Enable interrupt
- 
+   sei(); //Enable interrupt 
    // ADC en, // 1XXXXXXX
    // // ADC inicio x1xxxxxx
    // No AUTO gatillo // xx0xxxxx
    // Habilitar ADC interrupción // xxxx1xxx
-   // Divisor del reloj ADC (1: 2) // XXXXX000
-   
-   ADCSRA = 0xc8;               // 11001000
-                         // La corrección de errores (gracias NC666):
-                     // El 0xd8 valor original es incorrecto, ya que también establece ADIF
-   // ADCSRA = 0x88; // 10001000
-                        // Propuesta NC666: Probablemente hace falta establecer ADSC poco
-                     // A continuación, el ADC se inicia en el modo de suspensión automática - Todavía no he probado
- 
-   
+   // Divisor del reloj ADC (1: 2) // XXXXX000   
+   ADCSRA = 0xc8;               // 11001000 si divido entre 8 mejoro la resolucion 11001011 0xcb
    sleep_cpu(); //Enviar a dormir  procesador durante la conversion
    sleep_disable();
    cli(); //Disable interrupts
@@ -162,12 +155,9 @@ ISR(WDT_vect) //INterrupcion del WatchDog
 {
 unsigned int brilloActual;
 int incrementoBrillo;
+static int contadorDestellos;
 
-if(estado!=DIA && estado!=ENVIANDO){  
-   brilloActual = readADC();
-   incrementoBrillo = brilloActual - brilloAnterior;
-   brilloAnterior = brilloActual;      
-   }
+
 switch(estado)
    {
       case DIA:
@@ -178,14 +168,17 @@ switch(estado)
 
       case ENVIANDO:
             if(doBlink())estado=NOCHE; //Envia
-            setWD(TEMPORIZADOR_NOCHE);
+            setWD(TEMPORIZADOR_ENVIO);
             break;
+           
 
       case DIA_LDR:
-            if(brilloActual < UMBRAL_NOCHE)  // Umbral noche Si está oscuro
-            {// => De a modo nocturno
+            brilloAnterior = readADC();
+            if(brilloAnterior < UMBRAL_NOCHE)  // Umbral noche Si está oscuro
+            {
                estado=NOCHE;
                setWD(TEMPORIZADOR_NOCHE);
+             
                
             }else                     // Si todavía es luz apago la LDR
             {                        // => Inténtalo de nuevo en 8s
@@ -197,17 +190,34 @@ switch(estado)
             break;
 
       case NOCHE:
+            brilloActual = readADC();
+            incrementoBrillo = brilloActual - brilloAnterior;
+            brilloAnterior = brilloActual; 
             if(incrementoBrillo > INC_BRILLO_ENVIAR )   // Si el brillo en el último ciclo
                {               // Se ha elevado => rumblinken algo
                   wBlinkCounter = 0;      // Blinkgenerator initialisieren
                   estado=ENVIANDO;
                }
-            else if(brilloActual > UMBRAL_DIA) estado=CAMBIANDO;    
-            setWD(TEMPORIZADOR_NOCHE);     
+            else if(brilloActual > UMBRAL_DIA) estado=CAMBIANDO; 
+               else if(contadorDestellos++>64)
+                        {
+                        contadorDestellos=0;
+                        digitalWrite(LED2,HIGH);
+                        setWD(TEMPORIZADOR_ENVIO);
+                        estado=LED_ON;
+                        }
+             setWD(TEMPORIZADOR_NOCHE);                
+            break;
+
+      case LED_ON:
+            digitalWrite(LED1,LOW);
+            estado=NOCHE;
+            setWD(TEMPORIZADOR_NOCHE); 
             break;
 
       case CAMBIANDO:
-            if(brilloActual > UMBRAL_DIA)   //tiene que superar el umbral de día por UMBRAL_DIA_COUNTER veces
+            brilloAnterior = readADC();
+            if(brilloAnterior > UMBRAL_DIA)   //tiene que superar el umbral de día por UMBRAL_DIA_COUNTER veces
             { 
                contadorUmbralDiaSuperado++;                  
                if(contadorUmbralDiaSuperado > UMBRAL_DIA_COUNTER)   //Si supera el número de veces, es de día
@@ -218,6 +228,7 @@ switch(estado)
                   setWD(TEMPORIZADOR_DIA);
                }
                else setWD(TEMPORIZADOR_NOCHE);
+
                
             }
             else            // Si todavía está oscuro, fue un error de medida.  vuelta a la noche
@@ -225,10 +236,17 @@ switch(estado)
                contadorUmbralDiaSuperado=0;
                estado=NOCHE;
                setWD(TEMPORIZADOR_NOCHE);
+              
             }
+            break;
+
+         default:
+            estado=DIA;
+            setWD(TEMPORIZADOR_DIA);
             break;
      
    }  
+   
 } 
 
 /* =================================================================
